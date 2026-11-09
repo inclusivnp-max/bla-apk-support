@@ -194,6 +194,8 @@ export {
   readZipEntries,
   writeZipArchive,
   protectZipOrApkBuffer,
+  findApkSigningBlock,
+  isApkSignatureEntry,
 } from "./shields/formats/archive.js";
 export {
   blaRollupPlugin,

@@ -183,7 +183,7 @@ These shields exist in-tree and are covered by unit tests / catalog drift checks
 | :--- | :--- |
 | Ghidra / native decompilation depth | Requires a local Ghidra install + REA bridge |
 | Frida / LLDB / GDB / Rizin live sessions | Requires those debuggers + device/process attach |
-| JADX / full Android APK pipeline | APK resigning unsupported; standalone DEX shield is in-tree |
+| JADX / full Android APK pipeline | Supported via `--strip-signatures` (clean unsigned/aligned APK output ready for `apksigner`) |
 | **Firmware** containers | Staging/extraction budgets exist; no honest E2E without firmware corpora |
 | **SPIR-V / CUDA fatbinary / AMD GPU objects** | Need native GPU object decoders; **PTX text** is shielded in-tree |
 | EVMole in-process EVM decode | Not pathable in-process; EVM shield densifies to the 4 MiB input cap |

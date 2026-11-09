@@ -48,14 +48,145 @@ export class UnsupportedArchiveError extends Error {
 }
 
 export class UnsupportedApkProtectionError extends Error {
-  constructor() {
-    super("APK protection is unsupported: a signing-aware, integrity-preserving pipeline is required. Input and existing output are unchanged.");
+  constructor(message?: string) {
+    super(
+      message ??
+        "APK protection is unsupported: a signing-aware, integrity-preserving pipeline is required. Pass --strip-signatures to strip existing signatures for re-signing, or provide an unsigned APK. Input and existing output are unchanged.",
+    );
     this.name = "UnsupportedApkProtectionError";
   }
 }
 
-/** Reads only the explicitly supported, metadata-free classic ZIP subset. */
-export function readZipEntries(bytes: Buffer): readonly ZipEntryInfo[] {
+export interface ReadZipOptions {
+  readonly allowApkStructures?: boolean;
+  readonly stripSignatures?: boolean;
+}
+
+export function findApkSigningBlock(
+  bytes: Buffer,
+  centralDirectoryStart: number,
+): { readonly offset: number; readonly size: number } | null {
+  if (centralDirectoryStart < 24) return null;
+  const magic = bytes.subarray(centralDirectoryStart - 16, centralDirectoryStart);
+  if (magic.toString("latin1") !== "APK Sig Block 42") return null;
+
+  const blockSizeBig = bytes.readBigUInt64LE(centralDirectoryStart - 24);
+  const blockSize = Number(blockSizeBig);
+  if (!Number.isSafeInteger(blockSize) || blockSize < 24) return null;
+
+  const blockStart = centralDirectoryStart - 8 - blockSize;
+  if (blockStart < 0) return null;
+
+  const firstSize = bytes.readBigUInt64LE(blockStart);
+  if (firstSize !== blockSizeBig) return null;
+
+  return { offset: blockStart, size: blockSize + 8 };
+}
+
+export function isApkSignatureEntry(name: string): boolean {
+  return /^META-INF\/.*\.(SF|RSA|DSA|EC|sig)$/i.test(name) || /^META-INF\/SIG-.+$/i.test(name);
+}
+
+function readApkZipEntries(bytes: Buffer, options?: ReadZipOptions): readonly ZipEntryInfo[] {
+  const reject = (reason: string): never => {
+    throw new UnsupportedArchiveError(reason);
+  };
+  let eocd = bytes.length - 22;
+  while (eocd >= 0 && bytes.readUInt32LE(eocd) !== 0x06054b50) {
+    eocd--;
+    if (bytes.length - eocd > 65557) break;
+  }
+  if (eocd < 0 || bytes.readUInt32LE(eocd) !== 0x06054b50) {
+    reject("missing terminal EOCD, comments, or trailing data");
+  }
+
+  const count = bytes.readUInt16LE(eocd + 10);
+  const size = bytes.readUInt32LE(eocd + 12);
+  const start = bytes.readUInt32LE(eocd + 16);
+  if (count === 0xffff || size === 0xffffffff || start === 0xffffffff) reject("ZIP64");
+
+  const entries: ZipEntryInfo[] = [];
+  const names = new Set<string>();
+  let central = start;
+  let decodedTotal = 0;
+
+  for (let i = 0; i < count; i++) {
+    if (central + 46 > eocd || bytes.readUInt32LE(central) !== 0x02014b50) {
+      reject("truncated central directory");
+    }
+    const flags = bytes.readUInt16LE(central + 8);
+    const method = bytes.readUInt16LE(central + 10);
+    const crc = bytes.readUInt32LE(central + 16);
+    const compressedSize = bytes.readUInt32LE(central + 20);
+    const uncompressedSize = bytes.readUInt32LE(central + 24);
+    const nameLen = bytes.readUInt16LE(central + 28);
+    const extraLen = bytes.readUInt16LE(central + 30);
+    const commentLen = bytes.readUInt16LE(central + 32);
+    const localOffset = bytes.readUInt32LE(central + 42);
+
+    if (flags & 1) reject("flags (including encryption)");
+    if (method !== 0 && method !== 8) reject("unsupported compression method");
+    if (compressedSize === 0xffffffff || uncompressedSize === 0xffffffff) reject("ZIP64 sizes");
+
+    if (localOffset + 30 > bytes.length || bytes.readUInt32LE(localOffset) !== 0x04034b50) {
+      reject("missing local header or unrepresented data");
+    }
+    const localNameLen = bytes.readUInt16LE(localOffset + 26);
+    const localExtraLen = bytes.readUInt16LE(localOffset + 28);
+
+    const nameBytes = bytes.subarray(central + 46, central + 46 + nameLen);
+    const name = nameBytes.toString("utf8");
+    if (nameBytes.length === 0) reject("unsupported or inconsistent filenames");
+
+    const dataStart = localOffset + 30 + localNameLen + localExtraLen;
+    const dataEnd = dataStart + compressedSize;
+    if (dataEnd > bytes.length) reject("truncated entry data");
+
+    decodedTotal += uncompressedSize;
+    if (uncompressedSize > 64 * 1024 * 1024 || decodedTotal > 256 * 1024 * 1024) {
+      reject("decoded size exceeds admission limits");
+    }
+
+    const compressed = bytes.subarray(dataStart, dataEnd);
+    let data: Buffer;
+    if (method === 0) {
+      if (compressedSize !== uncompressedSize) reject("stored entry size mismatch");
+      data = Buffer.from(compressed);
+    } else {
+      try {
+        const result = inflateRawSync(compressed, {
+          maxOutputLength: Math.max(1, uncompressedSize + 1),
+          info: true,
+        });
+        const decoded = result as unknown as { buffer: Buffer; engine: { bytesWritten: number } };
+        if (decoded.engine.bytesWritten !== compressedSize) reject("unconsumed compressed bytes");
+        data = decoded.buffer;
+      } catch {
+        data = reject("invalid or incomplete deflate stream");
+      }
+    }
+    if (data.length !== uncompressedSize || crc32(data) !== crc) {
+      reject("decoded size or CRC mismatch");
+    }
+
+    if (!options?.stripSignatures || !isApkSignatureEntry(name)) {
+      if (!names.has(name)) {
+        names.add(name);
+        entries.push({ name, compressedSize, uncompressedSize, compressionMethod: method, data });
+      }
+    }
+
+    central += 46 + nameLen + extraLen + commentLen;
+  }
+
+  return entries;
+}
+
+/** Reads only the explicitly supported, metadata-free classic ZIP subset, with resilient support for APK structures when requested. */
+export function readZipEntries(bytes: Buffer, options?: ReadZipOptions): readonly ZipEntryInfo[] {
+  if (options?.allowApkStructures) {
+    return readApkZipEntries(bytes, options);
+  }
   const reject = (reason: string): never => { throw new UnsupportedArchiveError(reason); };
   const end = bytes.length - 22;
   if (end < 0 || bytes.readUInt32LE(end) !== 0x06054b50) reject("missing terminal EOCD, comments, or trailing data");
@@ -134,6 +265,7 @@ export function readZipEntries(bytes: Buffer): readonly ZipEntryInfo[] {
  */
 export function writeZipArchive(
   files: readonly { readonly name: string; readonly data: Buffer; readonly storeOnly?: boolean }[],
+  options: { readonly zipalign?: boolean } = {},
 ): Buffer {
   const localHeaders: Buffer[] = [];
   const centralHeaders: Buffer[] = [];
@@ -147,7 +279,19 @@ export function writeZipArchive(
     const compressedData = useStore ? file.data : deflateRawSync(file.data);
     const method = useStore ? 0 : 8;
 
-    const local = Buffer.alloc(30 + nameBuf.length);
+    let extraField = Buffer.alloc(0);
+    if (options.zipalign && useStore) {
+      const currentDataOffset = localOffset + 30 + nameBuf.length;
+      const targetAlign = 4;
+      const rem = (currentDataOffset + 4) % targetAlign;
+      const pad = rem === 0 ? 0 : targetAlign - rem;
+      const totalExtra = 4 + pad;
+      extraField = Buffer.alloc(totalExtra);
+      extraField.writeUInt16LE(0xd935, 0);
+      extraField.writeUInt16LE(pad, 2);
+    }
+
+    const local = Buffer.alloc(30 + nameBuf.length + extraField.length);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4); // version needed
     local.writeUInt16LE(0, 6); // flags
@@ -158,12 +302,15 @@ export function writeZipArchive(
     local.writeUInt32LE(compressedData.length, 18);
     local.writeUInt32LE(uncompressedSize, 22);
     local.writeUInt16LE(nameBuf.length, 26);
-    local.writeUInt16LE(0, 28);
+    local.writeUInt16LE(extraField.length, 28);
     nameBuf.copy(local, 30);
+    if (extraField.length > 0) {
+      extraField.copy(local, 30 + nameBuf.length);
+    }
 
     localHeaders.push(local, compressedData);
 
-    const central = Buffer.alloc(46 + nameBuf.length);
+    const central = Buffer.alloc(46 + nameBuf.length + extraField.length);
     central.writeUInt32LE(0x02014b50, 0);
     central.writeUInt16LE(20, 4);
     central.writeUInt16LE(20, 6);
@@ -175,13 +322,16 @@ export function writeZipArchive(
     central.writeUInt32LE(compressedData.length, 20);
     central.writeUInt32LE(uncompressedSize, 24);
     central.writeUInt16LE(nameBuf.length, 28);
-    central.writeUInt16LE(0, 30);
+    central.writeUInt16LE(extraField.length, 30);
     central.writeUInt16LE(0, 32);
     central.writeUInt16LE(0, 34);
     central.writeUInt16LE(0, 36);
     central.writeUInt32LE(0, 38);
     central.writeUInt32LE(localOffset, 42);
     nameBuf.copy(central, 46);
+    if (extraField.length > 0) {
+      extraField.copy(central, 46 + nameBuf.length);
+    }
 
     centralHeaders.push(central);
     localOffset += local.length + compressedData.length;
@@ -204,19 +354,37 @@ export function writeZipArchive(
 /** Admission shared with the file engine, before any output paths are created. */
 export function validateZipProtectionInput(
   bytes: Buffer,
-  options: { readonly allowUnsignedApk?: boolean } = {},
+  options: { readonly allowUnsignedApk?: boolean; readonly stripSignatures?: boolean } = {},
 ): readonly ZipEntryInfo[] {
-  const existingEntries = readZipEntries(bytes);
+  const existingEntries = readZipEntries(bytes, {
+    allowApkStructures: Boolean(options.allowUnsignedApk),
+    stripSignatures: options.stripSignatures,
+  });
   // Reserve room for decoy property stubs + canary/manifest + R8 mapping pair + JNI .so.
   // 0xffff is a ZIP64 sentinel, not a usable classic-ZIP entry count.
   if (existingEntries.length > 0xfffe - 16) {
     throw new UnsupportedArchiveError("insufficient classic ZIP entry-count capacity for output");
   }
-  const isSigned = existingEntries.some((e) =>
-    /^META-INF\/.*\.(SF|RSA|DSA|EC)$/i.test(e.name),
-  );
-  const hasManifest = existingEntries.some((e) => e.name === "AndroidManifest.xml");
-  if (isSigned) {
+
+  const rawEntries = readZipEntries(bytes, {
+    allowApkStructures: Boolean(options.allowUnsignedApk),
+    stripSignatures: false,
+  });
+  let hasSigBlock = false;
+  if (options.allowUnsignedApk) {
+    let eocd = bytes.length - 22;
+    while (eocd >= 0 && bytes.readUInt32LE(eocd) !== 0x06054b50) {
+      eocd--;
+      if (bytes.length - eocd > 65557) break;
+    }
+    if (eocd >= 0 && bytes.readUInt32LE(eocd) === 0x06054b50) {
+      const cdStart = bytes.readUInt32LE(eocd + 16);
+      hasSigBlock = findApkSigningBlock(bytes, cdStart) !== null;
+    }
+  }
+  const isSigned = hasSigBlock || rawEntries.some((e) => isApkSignatureEntry(e.name));
+  const hasManifest = rawEntries.some((e) => e.name === "AndroidManifest.xml");
+  if (isSigned && !options.stripSignatures) {
     throw new UnsupportedArchiveError("APK or signed archive requires a signing-aware pipeline");
   }
   if (hasManifest && !options.allowUnsignedApk) {
@@ -271,6 +439,8 @@ export function protectZipOrApkBuffer(
     readonly intensity?: ProtectionIntensity;
     readonly seed?: string | number;
     readonly isApk?: boolean;
+    readonly stripSignatures?: boolean;
+    readonly zipalign?: boolean;
   } = {},
 ): {
   readonly buffer: Buffer;
@@ -288,18 +458,35 @@ export function protectZipOrApkBuffer(
   /** Non-zero when unsigned APK path planted decoy classesN.dex for REA #8154. */
   readonly androidDexXrefBytes: number;
   readonly androidDexXrefCallers: number;
+  readonly signaturesStripped?: boolean;
 } {
-  const preview = readZipEntries(bytes);
-  const isSigned = preview.some((e) => /^META-INF\/.*\.(SF|RSA|DSA|EC)$/i.test(e.name));
+  const preview = readZipEntries(bytes, {
+    allowApkStructures: Boolean(options.isApk),
+    stripSignatures: false,
+  });
+  let hasSigBlock = false;
+  if (options.isApk) {
+    let eocd = bytes.length - 22;
+    while (eocd >= 0 && bytes.readUInt32LE(eocd) !== 0x06054b50) {
+      eocd--;
+      if (bytes.length - eocd > 65557) break;
+    }
+    if (eocd >= 0 && bytes.readUInt32LE(eocd) === 0x06054b50) {
+      const cdStart = bytes.readUInt32LE(eocd + 16);
+      hasSigBlock = findApkSigningBlock(bytes, cdStart) !== null;
+    }
+  }
+  const isSigned = hasSigBlock || preview.some((e) => isApkSignatureEntry(e.name));
   const hasManifest = preview.some((e) => e.name === "AndroidManifest.xml");
   const treatAsApk = Boolean(options.isApk) || hasManifest;
 
-  if (treatAsApk && isSigned) {
+  if (treatAsApk && isSigned && !options.stripSignatures) {
     throw new UnsupportedApkProtectionError();
   }
 
   const existingEntries = validateZipProtectionInput(bytes, {
     allowUnsignedApk: treatAsApk,
+    stripSignatures: options.stripSignatures,
   });
   const intensity = options.intensity ?? "balanced";
   const prng = new SeededPrng(options.seed ?? "bla-archive-shield-v1");
@@ -427,7 +614,7 @@ export function protectZipOrApkBuffer(
   }
 
   return {
-    buffer: writeZipArchive(outputFiles),
+    buffer: writeZipArchive(outputFiles, { zipalign: options.zipalign === true }),
     decoyEntriesInjected: decoyCount + 2 + r8ExtraEntries,
     chaffPayloadsEmbedded: chaffPayloads.length,
     canaryTokensEmbedded: deception.canary.syntheticCanaryTokens.length,
@@ -439,5 +626,6 @@ export function protectZipOrApkBuffer(
     androidManifestNamedComponents,
     androidDexXrefBytes,
     androidDexXrefCallers,
+    ...(treatAsApk && isSigned && options.stripSignatures ? { signaturesStripped: true } : {}),
   };
 }

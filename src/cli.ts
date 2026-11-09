@@ -110,6 +110,7 @@ Options:
   --allow-js-wasm-hydrate-dump  Allow bankrupt despite JS←WASM hydrate param-dump (round-5); OFF by default
   --allow-wasm-xor-mask-sidecar  Allow bankrupt despite WASM XOR-mask-beside-blob packs (round-6); OFF by default
   --allow-wasm-seal-xor-known-plaintext  Allow bankrupt despite seal.revision XOR known-plaintext packs (round-7); OFF by default
+  --strip-signatures          Strip existing Android APK signatures (v1 META-INF and v2/v3 signing block) to allow hardening and re-signing; OFF by default
   --lang <c|rust|go>          Target language for emit-headers (default: c)
   --fail-under <n>            Exit 2 when the score fails the gate: defense score < n (defend/verify) or audit exposure score > n (audit)
   --client <id>               Agent client ID for setup (repeatable: claude_code, cursor, codex, etc.)
@@ -150,6 +151,7 @@ interface ParsedCliArgs {
   readonly allowJsWasmHydrateDump: boolean;
   readonly allowWasmXorMaskSidecar: boolean;
   readonly allowWasmSealXorKnownPlaintext: boolean;
+  readonly stripSignatures: boolean;
   readonly allowPlaintextString: boolean;
   readonly allowSinglePointIntegrity: boolean;
   readonly allowMissingBindRuntime: boolean;
@@ -194,6 +196,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let allowJsWasmHydrateDump = false;
   let allowWasmXorMaskSidecar = false;
   let allowWasmSealXorKnownPlaintext = false;
+  let stripSignatures = false;
   let allowPlaintextString = false;
   let allowSinglePointIntegrity = false;
   let allowMissingBindRuntime = false;
@@ -269,6 +272,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       allowWasmXorMaskSidecar = true;
     } else if (arg === "--allow-wasm-seal-xor-known-plaintext") {
       allowWasmSealXorKnownPlaintext = true;
+    } else if (arg === "--strip-signatures") {
+      stripSignatures = true;
     } else if (arg === "--allow-plaintext-string") {
       allowPlaintextString = true;
     } else if (arg === "--allow-single-point-integrity") {
@@ -365,6 +370,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     allowJsWasmHydrateDump,
     allowWasmXorMaskSidecar,
     allowWasmSealXorKnownPlaintext,
+    stripSignatures,
     allowPlaintextString,
     allowSinglePointIntegrity,
     allowMissingBindRuntime,
@@ -612,6 +618,7 @@ export async function runCli(argv: readonly string[] = process.argv.slice(2)): P
           allowWasmSealXorKnownPlaintext:
             parsed.allowWasmSealXorKnownPlaintext ||
             loaded.config.allowWasmSealXorKnownPlaintext === true,
+          stripSignatures: parsed.stripSignatures,
         });
         if (parsed.sarif) {
           console.log(
@@ -942,6 +949,7 @@ export async function runCli(argv: readonly string[] = process.argv.slice(2)): P
           allowWasmSealXorKnownPlaintext:
             parsed.allowWasmSealXorKnownPlaintext ||
             loaded.config.allowWasmSealXorKnownPlaintext === true,
+          stripSignatures: parsed.stripSignatures,
         });
         if (parsed.json) console.log(JSON.stringify(res, null, 2));
         else console.log(formatProtectionResult(res));

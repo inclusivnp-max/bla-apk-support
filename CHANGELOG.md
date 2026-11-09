@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Production-grade Android APK pipeline & resilient archive parser (`archive.ts`):**
+  - **APK Signing Block v2/v3 support (`findApkSigningBlock`):** parses Android APK Signing Blocks according to AOSP specification, detecting the 16-byte magic `APK Sig Block 42` and matching `uint64` size bounds without offset corruption.
+  - **Signature stripping for re-signing (`--strip-signatures` / `stripSignatures: true`):** enables hardening of real-world signed APKs by stripping v1 signatures (`META-INF/*.{SF,RSA,DSA,EC,sig}`) and v2/v3 signing blocks while preserving `AndroidManifest.xml` and `MANIFEST.MF`.
+  - **Resilient ZIP parser (`readApkZipEntries`):** allows UTF-8 filename flags (`0x0800`), Data Descriptors (`0x0008`), and Central Directory / Local Header extra fields (such as zipalign padding `0xd935`), eliminating crashes on real Android APKs.
+  - **Automatic 4-byte zipalign (`writeZipArchive` with `{ zipalign: true }`):** ensures uncompressed entries (shared libraries in `lib/` and assets) conform to Android package manager alignment requirements.
+  - **Tolerant APK audit (`auditTarget`):** inspects APK packages, multidex files (`classes*.dex`), and native libraries without failing on signatures or extra fields.
+  - **Comprehensive test suite (`tests/android-apk-realworld.test.ts`):** 7 new unit tests verifying APK signature scheme detection, v2 block parsing, fail-closed behavior, signature stripping, multidex protection, and 4-byte zipalign.
+
+
 ## [3.2.0] — 2026-11-08
 
 Minor release extending opt-in `sidecarEntangle` to **Bun / EOF-preserved native companions** and closing the defenseScore honesty gap when entanglement is left OFF.

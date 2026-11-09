@@ -67,6 +67,8 @@ export interface OneClickDefenseOptions {
   readonly allowWasmSealXorKnownPlaintext?: boolean;
   /** Sibling paths forwarded into self-seal when enabled (multi-artifact harden). */
   readonly selfSealSiblingPaths?: readonly string[];
+  /** When true, strip existing Android APK signatures to allow hardening and subsequent re-signing. */
+  readonly stripSignatures?: boolean;
 }
 
 export interface OneClickDefenseStageSummary {
@@ -228,6 +230,7 @@ export function defendTarget(options: OneClickDefenseOptions): OneClickDefenseRe
     ...(options.sidecarEntangleSoftFold === true
       ? { sidecarEntangleSoftFold: true }
       : {}),
+    ...(options.stripSignatures === true ? { stripSignatures: true } : {}),
     honeySourceMaps: true,
   });
 

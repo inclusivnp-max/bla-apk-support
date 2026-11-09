@@ -969,7 +969,8 @@ export function auditTarget(targetPath: string): AuditReport {
       };
     } else if (format === "archive-zip" || format === "android-apk") {
       vulnerableVectors.add("archive-inventory");
-      const entries = readZipEntries(rawBytes);
+      const isApk = format === "android-apk";
+      const entries = readZipEntries(rawBytes, { allowApkStructures: isApk });
       const isProtected = entries.some((e) => e.name.includes("bla-attestation-manifest.json"));
       exposedItems.push({
         id: `archive_${basename(absPath)}`,
@@ -977,7 +978,7 @@ export function auditTarget(targetPath: string): AuditReport {
         kind: "metadata-section",
         location: basename(absPath),
         riskLevel: isProtected ? "low" : "high",
-        reaToolUsed: format === "android-apk" ? "inspect_android_package" : "inspect_artifact",
+        reaToolUsed: isApk ? "inspect_android_package" : "inspect_artifact",
         estimatedTokensToReconstruct: isProtected ? 26_000 : 1_200,
         estimatedCostUsd: isProtected ? 2.1 : 0.06,
         reason: isProtected

@@ -422,7 +422,10 @@ function protectTargetInner(options: ProtectionOptions): ProtectionResult {
     });
   if (format === "archive-zip") validateZipProtectionInput(readFileSync(absInput));
   if (format === "android-apk") {
-    validateZipProtectionInput(readFileSync(absInput), { allowUnsignedApk: true });
+    validateZipProtectionInput(readFileSync(absInput), {
+      allowUnsignedApk: true,
+      stripSignatures: options.stripSignatures,
+    });
   }
   if (format === "electron-asar") validateAsarProtectionInput(readFileSync(absInput));
   if (format === "sqlite") validateSqliteFileInput(absInput);
@@ -958,6 +961,7 @@ function protectTargetInner(options: ProtectionOptions): ProtectionResult {
       intensity,
       seed,
       isApk: format === "android-apk",
+      stripSignatures: options.stripSignatures,
     });
     writeProtectedOutput(absOutput, res.buffer);
     decoyFunctionsInjected = 12 + res.membersHardened;
@@ -1103,6 +1107,7 @@ function protectTargetInner(options: ProtectionOptions): ProtectionResult {
                   allowWasmXorMaskSidecar: options.allowWasmXorMaskSidecar,
                   allowWasmSealXorKnownPlaintext: options.allowWasmSealXorKnownPlaintext,
                   selfSealSiblingPaths: options.selfSealSiblingPaths,
+                  stripSignatures: options.stripSignatures,
                 });
                 decoyFunctionsInjected += subRes.metrics.decoyFunctionsInjected;
                 fakeCrossReferencesCreated += subRes.metrics.fakeCrossReferencesCreated;
@@ -1188,6 +1193,7 @@ function protectTargetInner(options: ProtectionOptions): ProtectionResult {
     ...(wasmExportDecoysInjected > 0
       ? { wasmExportDecoysInjected }
       : {}),
+    ...(options.stripSignatures === true ? { signaturesStripped: true as const } : {}),
     seed,
     originalSha256: beforeAudit.sha256,
     protectedSha256: afterAudit.sha256,

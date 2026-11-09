@@ -240,6 +240,11 @@ export interface ProtectionOptions {
   readonly sidecarEntanglePaths?: readonly string[];
   /** Soft-fold mismatch into opaque seed instead of hard throw. Default false. */
   readonly sidecarEntangleSoftFold?: boolean;
+  /**
+   * When true, strip existing Android APK signatures (v1 META-INF signatures and
+   * v2/v3 APK Signing Block) to allow hardening and subsequent re-signing. Default false.
+   */
+  readonly stripSignatures?: boolean;
 }
 
 export interface ProtectionMetrics {
@@ -275,6 +280,8 @@ export interface ProtectionResult {
   readonly wasmExportOrderShuffled?: boolean;
   /** Count of long-name decoy export aliases injected (red-blue round-10/12 hygiene). */
   readonly wasmExportDecoysInjected?: number;
+  /** Present and true when existing APK signatures were stripped during protection. */
+  readonly signaturesStripped?: boolean;
   readonly seed: string;
   readonly originalSha256: string;
   readonly protectedSha256: string;
