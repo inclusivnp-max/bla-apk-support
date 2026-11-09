@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] — 2026-11-09
+
 ### Added
 - **Production-grade Android APK pipeline & resilient archive parser (`archive.ts`):**
   - **APK Signing Block v2/v3 support (`findApkSigningBlock`):** parses Android APK Signing Blocks according to AOSP specification, detecting the 16-byte magic `APK Sig Block 42` and matching `uint64` size bounds without offset corruption.
